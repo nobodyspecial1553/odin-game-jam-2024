@@ -3,12 +3,20 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 
 const vec3[6] vertices = vec3[6](
+	/*
 	vec3(1, 0, 0),
 	vec3(0, 0, 0),
 	vec3(0, 1, 0),
 	vec3(1, 0, 0),
 	vec3(0, 1, 0),
 	vec3(1, 1, 0)
+	*/
+	vec3(0, 1, 0),
+	vec3(1, 1, 0),
+	vec3(1, 0, 0),
+	vec3(0, 1, 0),
+	vec3(1, 0, 0),
+	vec3(0, 0, 0)
 );
 
 const vec2[6] uvs = vec2[6](
@@ -30,6 +38,8 @@ layout(location = 1) out flat int offset;
 
 void main(void) {
 	gl_Position = vec4(vertices[gl_VertexIndex], 1);
+	gl_Position.x /= fist.aspect_ratio;
+	gl_Position.xyz = vec3(1, 1, 0) - gl_Position.xyz;
 	out_uv = uvs[gl_VertexIndex];
 	offset = fist.offset;
 }
