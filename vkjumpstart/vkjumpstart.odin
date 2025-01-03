@@ -8,8 +8,23 @@ import os "core:os/os2"
 import "core:c"
 import "core:mem"
 import "core:slice"
+import "core:dynlib"
 
 import vk "vendor:vulkan"
+
+when ODIN_OS == .Linux {
+	VULKAN_LIB_PATH :: "libvulkan.so.1"
+}
+else when ODIN_OS == .Windows {
+	VULKAN_LIB_PATH :: "vulkan-1.dll"
+}
+else when ODIN_OS == .Darwin {
+	// VULKAN_LIB_PATH :: "libvulkan.1.dylib"
+	#panic("vkjumpstart: Unsupported OS!")
+}
+else {
+	#panic("vkjumpstart: Unsupported OS!")
+}
 
 /*
 	 TODOs:
@@ -31,6 +46,23 @@ check_result :: #force_inline proc(result: vk.Result, error_message: string = ""
 			log.panicf("CHECK_RESULT: %v", result, location = loc)
 		}
 	}
+}
+
+load_vulkan :: proc() -> (vulkan_lib: dynlib.Library, vkGetInstanceProcAddr: rawptr, ok: bool) {
+	vulkan_lib, ok = dynlib.load_library(VULKAN_LIB_PATH)
+	if !ok {
+		log.fatal("Unable to load vulkan library: \"%s\"", VULKAN_LIB_PATH)
+		return {}, nil, false
+	}
+
+	vkGetInstanceProcAddr, ok = dynlib.symbol_address(vulkan_lib, "vkGetInstanceProcAddr")
+	if !ok {
+		log.fatal("Unable to find symbol address: vkGetInstanceProcAddr")
+		dynlib.unload_library(vulkan_lib) or_return
+		return {}, nil, false
+	}
+
+	return vulkan_lib, vkGetInstanceProcAddr, ok
 }
 
 create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.Instance, instance_extensions: []cstring, enable_debug_features := ENABLE_DEBUG_FEATURES_DEFAULT) -> bool {

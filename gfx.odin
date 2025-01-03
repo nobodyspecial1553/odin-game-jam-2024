@@ -4,6 +4,7 @@ import "core:log"
 import "core:fmt"
 import "core:slice"
 import "core:time"
+import "core:dynlib"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -46,7 +47,17 @@ GFX :: struct {
 gfx: GFX
 
 gfx_init :: proc() {
+	// We'll leave it to the OS to unload
+	vulkan_lib, vk_get_instance_proc_address, vulkan_lib_ok := vkjs.load_vulkan()
+	if !vulkan_lib_ok {
+		log.panic("Unable to load Vulkan!")
+	}
+
 	// Init Window & Vk
+	if !glfw.VulkanSupported() {
+		log.panic("GLFW declared: Vulkan not supported!")
+	}
+
 	// Create Surface
 	glfw.WindowHint(glfw.RESIZABLE, glfw.TRUE)
 	glfw.WindowHint(glfw.CLIENT_API, glfw.NO_API)
@@ -57,8 +68,8 @@ gfx_init :: proc() {
 
 	// Create Instance
 	vk_instance_extensions := glfw.GetRequiredInstanceExtensions()
-	vk_get_instance_proc_address := glfw.GetInstanceProcAddress(nil, "vkGetInstanceProcAddr")
-	if !vkjs.create_instance(vk_get_instance_proc_address, &gfx.instance, vk_instance_extensions) {
+	// vk_get_instance_proc_address := glfw.GetInstanceProcAddress(nil, "vkGetInstanceProcAddr")
+	if !vkjs.create_instance(cast(rawptr)vk_get_instance_proc_address, &gfx.instance, vk_instance_extensions) {
 		log.panic("Unable to create instance!")
 	}
 

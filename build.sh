@@ -25,7 +25,7 @@ dyn_lib_success=$(odin build game/ -out:game_temp.so -build-mode:dynamic "${FLAG
 if [[ $dyn_lib_success -ne 0 ]]; then
 	exit "$dyn_lib_success"
 fi
-mv game_temp.so game.so
+mv game_temp.so game.so # This was done for dynamic linking stuff, gonna write an Odin live-compile and reload thing some other day
 
 if [[ $run -ne '0' ]]; then
 	nohup konsole -e "./Game" > /dev/null 2>&1 &
