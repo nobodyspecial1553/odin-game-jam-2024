@@ -26,11 +26,6 @@ else {
 	#panic("vkjumpstart: Unsupported OS!")
 }
 
-/*
-	 TODOs:
-	 Activate bindless textures stuff by default
-*/
-
 @(private)
 ENABLE_DEBUG_FEATURES_DEFAULT :: #config(VKJS_ENABLE_DEBUG_FEATURES_DEFAULT, ODIN_DEBUG)
 

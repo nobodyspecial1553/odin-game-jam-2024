@@ -60,9 +60,13 @@ update :: proc() {
 init :: proc(gfx_ptr: rawptr, game_data: rawptr = nil) {
 	assert(gfx_ptr != nil)
 	gfx = cast(^GFX)gfx_ptr
+	// We'll leave it to the OS to unload
+	vulkan_lib, vk_get_instance_proc_address, vulkan_lib_ok := vkjs.load_vulkan()
+	if !vulkan_lib_ok {
+		log.panic("Unable to load Vulkan!")
+	}
 	// Reload vulkan addresses
-	vk_get_instance_proc_addr := glfw.GetInstanceProcAddress(nil, "vkGetInstanceProcAddr")
-	vk.load_proc_addresses_global(vk_get_instance_proc_addr)
+	vk.load_proc_addresses_global(vk_get_instance_proc_address)
 	vk.load_proc_addresses_instance(gfx.instance)
 	vk.load_proc_addresses_device(gfx.device)
 
