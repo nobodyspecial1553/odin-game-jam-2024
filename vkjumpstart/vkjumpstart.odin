@@ -31,7 +31,7 @@ ENABLE_DEBUG_FEATURES_DEFAULT :: #config(VKJS_ENABLE_DEBUG_FEATURES_DEFAULT, ODI
 
 check_result :: #force_inline proc(result: vk.Result, error_message: string = "", loc := #caller_location) {
 	#partial switch(result) {
-	case .SUCCESS:
+	case .SUCCESS, .INCOMPLETE:
 		break
 	case:
 		if len(error_message) > 0 {
@@ -44,15 +44,17 @@ check_result :: #force_inline proc(result: vk.Result, error_message: string = ""
 }
 
 load_vulkan :: proc() -> (vulkan_lib: dynlib.Library, vkGetInstanceProcAddr: rawptr, ok: bool) {
+	vkGetInstanceProcAddr_Str :: "vkGetInstanceProcAddr"
+
 	vulkan_lib, ok = dynlib.load_library(VULKAN_LIB_PATH)
 	if !ok {
 		log.fatal("Unable to load vulkan library: \"%s\"", VULKAN_LIB_PATH)
 		return {}, nil, false
 	}
 
-	vkGetInstanceProcAddr, ok = dynlib.symbol_address(vulkan_lib, "vkGetInstanceProcAddr")
+	vkGetInstanceProcAddr, ok = dynlib.symbol_address(vulkan_lib, vkGetInstanceProcAddr_Str)
 	if !ok {
-		log.fatal("Unable to find symbol address: vkGetInstanceProcAddr")
+		log.fatal("Unable to find symbol address: " + vkGetInstanceProcAddr_Str)
 		dynlib.unload_library(vulkan_lib) or_return
 		return {}, nil, false
 	}
@@ -63,8 +65,15 @@ load_vulkan :: proc() -> (vulkan_lib: dynlib.Library, vkGetInstanceProcAddr: raw
 create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.Instance, instance_extensions: []cstring, enable_debug_features := ENABLE_DEBUG_FEATURES_DEFAULT) -> bool {
 	assert(instance != nil)
 
+	instance_extensions := instance_extensions
+
 	arena_temp := runtime.default_temp_allocator_temp_begin()
 	defer runtime.default_temp_allocator_temp_end(arena_temp)
+
+	extra_instance_extensions := []cstring {
+		"VK_KHR_portability_enumeration",
+	}
+	instance_extensions = slice.concatenate([][]cstring { instance_extensions, extra_instance_extensions }, context.temp_allocator)
 
 	// Load Global Procs
 	if vkGetInstanceProcAddr_func_ptr != nil {
@@ -106,7 +115,7 @@ create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.In
 
 	instance_create_info := vk.InstanceCreateInfo {
 		sType = .INSTANCE_CREATE_INFO,
-		flags = { /*.ENUMERATE_PORTABILITY_KHR*/ },
+		flags = { .ENUMERATE_PORTABILITY_KHR },
 		pApplicationInfo = &application_info,
 		enabledExtensionCount = cast(u32)len(instance_extensions),
 		ppEnabledExtensionNames = raw_data(instance_extensions),
@@ -153,7 +162,7 @@ create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.In
 		validation_features := vk.ValidationFeaturesEXT {
 			sType = .VALIDATION_FEATURES_EXT,
 			enabledValidationFeatureCount = len(validation_features_enable),
-			pEnabledValidationFeatures = &validation_features_enable[0],
+			pEnabledValidationFeatures = raw_data(&validation_features_enable),
 		}
 		instance_create_info.pNext = &validation_features
 	}
@@ -163,8 +172,10 @@ create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.In
 	case .SUCCESS:
 	case .ERROR_LAYER_NOT_PRESENT:
 		log.error("Instance Layer not present!")
+		return false
 	case .ERROR_EXTENSION_NOT_PRESENT:
 		log.error("Instance Extension not present!")
+		return false
 	}
 
 	// Load Instance Procs

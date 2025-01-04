@@ -35,10 +35,6 @@ main :: proc() {
 	context.logger = log.create_console_logger(.Debug when ODIN_DEBUG else .Info)
 	defer log.destroy_console_logger(context.logger)
 
-	if !glfw.Init() {
-		log.panic("Unable to initialize GLFW!")
-	}
-	defer glfw.Terminate()
 	gfx_init()
 
 	game, game_lib_success := load_game_lib()
@@ -82,7 +78,7 @@ main :: proc() {
 			gfx.delta_time = f32(current_time - last_time)
 			last_time = current_time
 			// Not a great way to make sure it doens't update too much, but this is game jam shit!
-			time.sleep(time.Millisecond * 2)
+			time.sleep(time.Nanosecond * 500)
 		}
 		prev_time = current_time
 		// Render
@@ -93,7 +89,7 @@ main :: proc() {
 			gfx_recreate_swapchain()
 		}
 		// End of frame
-		if current_time - prev_second > 1 {
+		if current_time - prev_second >= 1 {
 			log.debugf("FPS: %v; Updates: %v", frames, updates)
 			frames = 0
 			gfx.last_updates_peak = updates

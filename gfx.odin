@@ -54,6 +54,9 @@ gfx_init :: proc() {
 	}
 
 	// Init Window & Vk
+	if !glfw.Init() {
+		log.panic("Unable to initialize GLFW!")
+	}
 	if !glfw.VulkanSupported() {
 		log.panic("GLFW declared: Vulkan not supported!")
 	}
@@ -89,8 +92,9 @@ gfx_init :: proc() {
 
 	// Create Swapchain
 	window_width, window_height := glfw.GetWindowSize(gfx.window)
-	gfx.swapchain = vkjs.create_swapchain({ cast(u32)window_width, cast(u32)window_height }, CONCURRENT_FRAMES, gfx.physical_device, gfx.device, gfx.surface, gfx.queues)
-	if gfx.swapchain.handle == 0 {
+	swapchain_created: bool = ---
+	gfx.swapchain, swapchain_created = vkjs.create_swapchain({ cast(u32)window_width, cast(u32)window_height }, CONCURRENT_FRAMES, gfx.physical_device, gfx.device, gfx.surface, gfx.queues)
+	if !swapchain_created {
 		log.panic("Unable to create Swapchain!")
 	}
 
@@ -136,6 +140,7 @@ gfx_clean :: proc() {
 		glfw.DestroyWindow(gfx.window)
 		gfx.window = nil
 	}
+	glfw.Terminate()
 
 	gfx = {}
 }
