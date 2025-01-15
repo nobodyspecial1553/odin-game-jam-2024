@@ -63,6 +63,7 @@ load_vulkan :: proc() -> (vulkan_lib: dynlib.Library, vkGetInstanceProcAddr: raw
 }
 
 create_instance :: proc(vkGetInstanceProcAddr_func_ptr: rawptr, instance: ^vk.Instance, instance_extensions: []cstring, enable_debug_features := ENABLE_DEBUG_FEATURES_DEFAULT) -> bool {
+
 	assert(instance != nil)
 
 	instance_extensions := instance_extensions

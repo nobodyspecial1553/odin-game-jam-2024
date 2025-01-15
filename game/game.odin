@@ -60,8 +60,13 @@ update :: proc() {
 init :: proc(gfx_ptr: rawptr, game_data: rawptr = nil) {
 	assert(gfx_ptr != nil)
 	gfx = cast(^GFX)gfx_ptr
-	// We'll leave it to the OS to unload
-	vulkan_lib, vk_get_instance_proc_address, vulkan_lib_ok := vkjs.load_vulkan()
+	// Re-init GLFW
+	if !glfw.Init() {
+		log.panic("Failed to initialize GLFW!")
+	}
+	
+	// Reinit vulkan
+	vulkan_lib, vk_get_instance_proc_address, vulkan_lib_ok := vkjs.load_vulkan() // We'll leave it to the OS to unload
 	if !vulkan_lib_ok {
 		log.panic("Unable to load Vulkan!")
 	}
