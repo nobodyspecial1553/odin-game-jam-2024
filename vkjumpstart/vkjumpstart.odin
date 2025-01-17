@@ -3,6 +3,7 @@ package ns_vkjumpstart_vkjs
 import "base:intrinsics"
 import "base:runtime"
 
+import "core:fmt"
 import "core:log"
 import os "core:os/os2"
 import "core:c"
@@ -29,18 +30,39 @@ else {
 @(private)
 ENABLE_DEBUG_FEATURES_DEFAULT :: #config(VKJS_ENABLE_DEBUG_FEATURES_DEFAULT, ODIN_DEBUG)
 
-check_result :: #force_inline proc(result: vk.Result, error_message: string = "", loc := #caller_location) {
+check_result :: proc
+(
+	result: vk.Result,
+	error_message: string = "",
+	panics := true,
+	allocator := context.temp_allocator,
+	loc := #caller_location,
+) -> (
+	ok: bool,
+)
+{
+	error_msg: string
+	if len(error_message) > 0 {
+		error_msg = fmt.aprintf("CHECK_RESULT: %v - Message: \"%s\"", result, error_message, allocator = allocator)
+	}
+	else {
+		error_msg = fmt.aprintf("CHECK_RESULT: %v", result, allocator = allocator)
+	}
+
 	#partial switch(result) {
 	case .SUCCESS, .INCOMPLETE:
-		break
+		return true
 	case:
-		if len(error_message) > 0 {
-			log.panicf("CHECK_RESULT: %v - Message: \"%s\"", result, error_message, location = loc)
+		if panics {
+			log.panic(error_msg, location = loc)
 		}
 		else {
-			log.panicf("CHECK_RESULT: %v", result, location = loc)
+			log.error(error_msg, location = loc)
+			return false
 		}
 	}
+
+	return true
 }
 
 load_vulkan :: proc() -> (vulkan_lib: dynlib.Library, vkGetInstanceProcAddr: rawptr, ok: bool) {

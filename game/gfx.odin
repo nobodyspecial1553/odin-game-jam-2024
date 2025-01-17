@@ -2,6 +2,7 @@ package game
 
 import "core:fmt"
 import "core:log"
+import "core:slice"
 
 import "vendor:glfw"
 import vk "vendor:vulkan"
@@ -254,13 +255,17 @@ create_shaders :: proc() {
 			"images/snow.png",
 		}
 		shader_ground.textures = make([]vkjs.Texture, len(textures_to_load))
-
-		texture_load_success: bool
-		#no_bounds_check for path, idx in textures_to_load {
-			shader_ground.textures[idx], texture_load_success = vkjs.texture_create_from_file(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, "images/snow.png")
-			assert(texture_load_success)
+		for &texture, idx in shader_ground.textures {
+			texture_file_path := textures_to_load[idx]
+			texture_load_success: bool = ---
+			texture_views := make([]vk.ImageView, 1)
+			texture, texture_views[0], texture_load_success = texture_load_from_file(texture_file_path)
+			texture.views = texture_views
+			if !texture_load_success {
+				log.panicf("Failed to load texture: \"%s\"", texture_file_path)
+			}
 		}
-		shader_ground.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, shader_ground.textures)
+		shader_ground.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, shader_ground.textures[0].views)
 
 		// Sampler
 		general_sampler_create_info := vk.SamplerCreateInfo {
@@ -484,13 +489,18 @@ create_shaders :: proc() {
 			"images/test.png",
 		}
 		shader_entity.textures = make([]vkjs.Texture, len(textures_to_load))
-
-		texture_load_success: bool
-		#no_bounds_check for path, idx in textures_to_load {
-			shader_entity.textures[idx], texture_load_success = vkjs.texture_create_from_file(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, path)
-			assert(texture_load_success)
+		for &texture, idx in shader_entity.textures {
+			texture_file_path := textures_to_load[idx]
+			texture_load_success: bool = ---
+			texture_views := make([]vk.ImageView, 1)
+			texture, texture_views[0], texture_load_success = texture_load_from_file(texture_file_path)
+			texture.views = texture_views
+			if !texture_load_success {
+				log.panicf("Failed to load texture: \"%s\"", texture_file_path)
+			}
 		}
-		shader_entity.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, shader_entity.textures)
+		texture_views := slice.concatenate([][]vk.ImageView { shader_entity.textures[0].views, shader_entity.textures[1].views }, context.temp_allocator)
+		shader_entity.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, texture_views)
 
 		// Sampler
 		general_sampler_create_info := vk.SamplerCreateInfo {
@@ -732,13 +742,18 @@ create_shaders :: proc() {
 			"images/fist.png",
 		}
 		shader_fist.textures = make([]vkjs.Texture, len(textures_to_load))
-
-		texture_load_success: bool
-		#no_bounds_check for path, idx in textures_to_load {
-			shader_fist.textures[idx], texture_load_success = vkjs.texture_create_from_file(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, path)
-			assert(texture_load_success)
+		for &texture, idx in shader_fist.textures {
+			texture_file_path := textures_to_load[idx]
+			texture_load_success: bool = ---
+			texture_views := make([]vk.ImageView, 1)
+			texture, texture_views[0], texture_load_success = texture_load_from_file(texture_file_path)
+			texture.views = texture_views
+			if !texture_load_success {
+				log.panicf("Failed to load texture: \"%s\"", texture_file_path)
+			}
 		}
-		shader_fist.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, shader_fist.textures)
+		shader_fist.texture_set = vkjs.texture_allocate_descriptor_set(gfx.device, texture_descriptor_pool, 0, shader_fist.textures[0].views)
+
 		// Sampler
 		general_sampler_create_info := vk.SamplerCreateInfo {
 			sType = .SAMPLER_CREATE_INFO,
@@ -999,6 +1014,7 @@ destroy_shaders :: proc() {
 		// Textures
 		for texture in shader_ground.textures {
 			vkjs.texture_destroy(gfx.device, texture)
+			delete(texture.views)
 		}
 		delete(shader_ground.textures)
 
@@ -1036,6 +1052,7 @@ destroy_shaders :: proc() {
 		// Textures
 		for texture in shader_entity.textures {
 			vkjs.texture_destroy(gfx.device, texture)
+			delete(texture.views)
 		}
 		delete(shader_entity.textures)
 
@@ -1073,6 +1090,7 @@ destroy_shaders :: proc() {
 		// Textures
 		for texture in shader_fist.textures {
 			vkjs.texture_destroy(gfx.device, texture)
+			delete(texture.views)
 		}
 		delete(shader_fist.textures)
 

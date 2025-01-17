@@ -3,84 +3,173 @@ package ns_vkjumpstart_vkjs
 import "core:log"
 import "core:fmt"
 import "core:mem"
-import "core:image/png"
-import "core:image"
+import "core:slice"
 
 import vk "vendor:vulkan"
 
-Texture_Channels :: enum i8 {
-	Invalid = 0,
-	R = 1,
-	RG = 2,
-	RGB = 3,
-	RGBA = 4,
-}
-
 Texture :: struct {
-	width: u32,
-	height: u32,
-	depth: u32,
+	// Metadata
+	using extent: vk.Extent3D, // has 'width', 'height' and 'depth'
+	format: vk.Format,
 	mip_levels: u32,
 	array_layers: u32,
-	channels: Texture_Channels,
+	samples: vk.SampleCountFlags,
+	usage: vk.ImageUsageFlags,
 
+	// Data
 	image: vk.Image,
-	view: vk.ImageView, // Default view that matches the image
 	memory: vk.DeviceMemory,
+	/*
+		 The `views` member only exists as a convenience.
+		 No "vkjumpstart" procedure will populate it.
+		 However, some "vkjumpstart" procedures will do extra things if it is populated.
+		 For example, `texture_destroy` will destroy the `views`
+	*/
+	views: []vk.ImageView,
 }
 
-Texture_Transfer_Info :: struct {
+@(require_results)
+texture_create :: proc
+(
+	device: vk.Device,
+	physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties, 
+	image_create_info: vk.ImageCreateInfo,
+	image_view_create_infos: []vk.ImageViewCreateInfo = nil,
+	image_views_out: []vk.ImageView = nil,
+) -> (
+	texture: Texture,
+	ok: bool,
+) #optional_ok
+{
+	assert(device != nil)
+
+	// Copy Metadata
+	texture.extent = image_create_info.extent
+	texture.format = image_create_info.format
+	texture.mip_levels = image_create_info.mipLevels
+	texture.array_layers = image_create_info.arrayLayers
+	texture.samples = image_create_info.samples
+	texture.usage = image_create_info.usage
+
+	// Create the image
+	image_create_info := image_create_info
+	image_create_info.sType = .IMAGE_CREATE_INFO // Don't need to set yourself :)
+	check_result(vk.CreateImage(device, &image_create_info, nil, &texture.image), "Unable to create image for texture! [" + #procedure + "]", panics = false) or_return
+
+	// Allocate memory for image
+	memory_requirements: vk.MemoryRequirements = ---
+	vk.GetImageMemoryRequirements(device, texture.image, &memory_requirements)
+	memory_type_index := get_memory_type_index(memory_requirements.memoryTypeBits, { .DEVICE_LOCAL }, physical_device_memory_properties)
+	if memory_type_index == max(u32) {
+		log.error("Failed to find valid memory heap! [" + #procedure + "]")
+		return texture, false
+	}
+
+	memory_allocate_info := vk.MemoryAllocateInfo {
+		sType = .MEMORY_ALLOCATE_INFO,
+		allocationSize = memory_requirements.size,
+		memoryTypeIndex = memory_type_index,
+	}
+	check_result(vk.AllocateMemory(device, &memory_allocate_info, nil, &texture.memory), "Unable to allocate memory for texture! [" + #procedure + "]", panics = false) or_return
+
+	// Bind memory to image
+	check_result(vk.BindImageMemory(device, texture.image, texture.memory, memoryOffset=0), "Unable to bind memory to image for texture! [" + #procedure + "]", panics = false) or_return
+
+	// Create views (if applicable)
+	if len(image_views_out) == 0 || len(image_view_create_infos) == 0 { return texture, true }
+	for &view, idx in image_views_out {
+		image_view_create_info := image_view_create_infos[idx]
+		image_view_create_info.sType = .IMAGE_VIEW_CREATE_INFO // Don't need to set yourself :)
+		image_view_create_info.image = texture.image
+		if vk.CreateImageView(device, &image_view_create_info, nil, &view) != .SUCCESS {
+			log.errorf("Unable to create ImageView[%v]", idx)
+			return texture, false
+		}
+	}
+
+	return texture, true
+}
+
+texture_destroy :: proc(device: vk.Device, texture: Texture) {
+	if texture.image != 0 {
+		vk.DestroyImage(device, texture.image, nil)
+	}
+	if texture.memory != 0 {
+		vk.FreeMemory(device, texture.memory, nil)
+	}
+	if texture.views != nil {
+		texture_destroy_views(device, texture.views)
+	}
+}
+
+texture_destroy_views :: proc(device: vk.Device, views: []vk.ImageView) {
+	for view in views {
+		vk.DestroyImageView(device, view, nil)
+	}
+}
+
+Texture_Buffer_Transfer_Info :: struct {
 	src: union {
 		[]byte, // CPU-local buffer
-		vk.Buffer, // Device buffer (Host-Visible in most cases)
+		vk.Buffer, // Device buffer
 	},
 	dst: vk.Image,
-	width: u32,
-	height: u32, // If zero, will be set to 1
-	depth: u32, // If zero, will be set to 1
+	// If height or depth are zero, they will be set to one automatically
+	using extent: vk.Extent3D,
 	image_subresource_layers: vk.ImageSubresourceLayers,
 }
 
+/*
+	 It is incumbent on the receiver of this struct to wait and free/destroy themselves
+	 You may use the procedure `texture_wait_for_transfer` to handle this for you
+*/
+
+Texture_Buffer_Transfer_Result :: struct {
+	fence: vk.Fence,
+	command_buffer: vk.CommandBuffer,
+	command_pool: vk.CommandPool,
+	free_list: [dynamic]Texture_Buffer_Transfer_Buffer_Free_Member,
+}
+
+Texture_Buffer_Transfer_Buffer_Free_Member :: struct {
+	buffer: vk.Buffer,
+	memory: vk.DeviceMemory,
+}
+
+@(require_results)
 texture_transfer_buffers_to_images :: proc
 (
 	device: vk.Device,
 	transfer_command_pool: vk.CommandPool,
 	transfer_queue: vk.Queue,
 	physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties,
-	transfers: []Texture_Transfer_Info
-)
+	transfers: []Texture_Buffer_Transfer_Info,
+) -> (
+	result: Texture_Buffer_Transfer_Result,
+	ok: bool,
+) #optional_ok
 {
 	assert(device != nil)
 	assert(transfer_command_pool != 0)
 	assert(transfer_queue != nil)
 
-	Buffer_Free_Member :: struct {
-		buffer: vk.Buffer,
-		memory: vk.DeviceMemory,
-	}
-	buffer_free_list := make([dynamic]Buffer_Free_Member, 0, len(transfers))
+	buffer_free_list := make([dynamic]Texture_Buffer_Transfer_Buffer_Free_Member, 0, len(transfers))
 
-	transfer_fence: vk.Fence = ---
-	transfer_fence_create_info := vk.FenceCreateInfo {
-		sType = .FENCE_CREATE_INFO,
-	}
-	check_result(vk.CreateFence(device, &transfer_fence_create_info, nil, &transfer_fence), "Unable to create tranfer fence!")
-
-	transfer_command_buffer: vk.CommandBuffer = ---
 	transfer_command_buffer_allocate_info := vk.CommandBufferAllocateInfo {
 		sType = .COMMAND_BUFFER_ALLOCATE_INFO,
 		commandPool = transfer_command_pool,
 		level = .PRIMARY,
 		commandBufferCount = 1,
 	}
-	check_result(vk.AllocateCommandBuffers(device, &transfer_command_buffer_allocate_info, &transfer_command_buffer), "Unable to allocate transfer command buffer!")
+	check_result(vk.AllocateCommandBuffers(device, &transfer_command_buffer_allocate_info, &result.command_buffer), "Unable to allocate transfer command buffer!", panics = false) or_return
+	result.command_pool = transfer_command_pool
 
 	// Begin Recording Commands
 	transfer_command_buffer_begin_info := vk.CommandBufferBeginInfo {
 		sType = .COMMAND_BUFFER_BEGIN_INFO,
 		flags = { .ONE_TIME_SUBMIT },
 	}
-	check_result(vk.BeginCommandBuffer(transfer_command_buffer, &transfer_command_buffer_begin_info), "Unable to begin recording commands for transferring buffers to images!")
+	check_result(vk.BeginCommandBuffer(result.command_buffer, &transfer_command_buffer_begin_info), "Unable to begin recording commands for transferring buffers to images!", panics = false) or_return
 
 	// Copy Buffers to Images
 	for transfer in transfers {
@@ -96,13 +185,14 @@ texture_transfer_buffers_to_images :: proc
 				usage = { .TRANSFER_SRC },
 				sharingMode = .EXCLUSIVE,
 			}
-			check_result(vk.CreateBuffer(device, &buffer_create_info, nil, &buffer), "Unable to create transfer source buffer!")
+			check_result(vk.CreateBuffer(device, &buffer_create_info, nil, &buffer), "Unable to create transfer source buffer!", panics = false) or_return
 
 			buffer_memory_requirements: vk.MemoryRequirements = ---
 			vk.GetBufferMemoryRequirements(device, buffer, &buffer_memory_requirements)
 			buffer_memory_type_index := get_memory_type_index(buffer_memory_requirements.memoryTypeBits, { .HOST_VISIBLE }, physical_device_memory_properties)
 			if buffer_memory_type_index == max(u32) {
-				log.fatal("Unable to find valid transfer source buffer memory type!")
+				log.error("Unable to find valid transfer source buffer memory type!")
+				return {}, false
 			}
 
 			/*
@@ -120,10 +210,10 @@ texture_transfer_buffers_to_images :: proc
 			}
 			vk.AllocateMemory(device, &buffer_memory_allocate_info, nil, &buffer_memory)
 
-			check_result(vk.BindBufferMemory(device, buffer, buffer_memory, 0), "Unable to bind transfer source memory to buffer!")
+			check_result(vk.BindBufferMemory(device, buffer, buffer_memory, 0), "Unable to bind transfer source memory to buffer!", panics = false) or_return
 
 			buffer_ptr: rawptr = ---
-			check_result(vk.MapMemory(device, buffer_memory, 0, cast(vk.DeviceSize)len(src), {}, &buffer_ptr), "Unable to map transfer source memory!")
+			check_result(vk.MapMemory(device, buffer_memory, 0, cast(vk.DeviceSize)len(src), {}, &buffer_ptr), "Unable to map transfer source memory!", panics = false) or_return
 			mem.copy_non_overlapping(buffer_ptr, raw_data(src), len(src))
 
 			flush_memory_range := vk.MappedMemoryRange {
@@ -132,11 +222,11 @@ texture_transfer_buffers_to_images :: proc
 				offset = 0,
 				size = cast(vk.DeviceSize)len(src),
 			}
-			check_result(vk.FlushMappedMemoryRanges(device, 1, &flush_memory_range), "Unable to flush transfer source memory!")
+			check_result(vk.FlushMappedMemoryRanges(device, 1, &flush_memory_range), "Unable to flush transfer source memory!", panics = false) or_return
 			vk.UnmapMemory(device, buffer_memory)
 
 			// Append to free list
-			append(&buffer_free_list, Buffer_Free_Member { buffer, buffer_memory })
+			append(&buffer_free_list, Texture_Buffer_Transfer_Buffer_Free_Member { buffer, buffer_memory })
 
 			src_buffer = buffer
 		case vk.Buffer:
@@ -168,9 +258,10 @@ texture_transfer_buffers_to_images :: proc
 			imageMemoryBarrierCount = 1,
 			pImageMemoryBarriers = &texture_image_memory_barrier,
 		}
-		vk.CmdPipelineBarrier2(transfer_command_buffer, &texture_barrier_dependency_info)
+		vk.CmdPipelineBarrier2(result.command_buffer, &texture_barrier_dependency_info)
 
 		// Copy buffer to image
+		assert(transfer.width != 0)
 		copy_width := transfer.width
 		copy_height := max(1, transfer.height)
 		copy_depth := max(1, transfer.depth)
@@ -184,7 +275,7 @@ texture_transfer_buffers_to_images :: proc
 			 then it needs to handle that case!
 			 This procedure is broken right now as-is!
 		*/
-		vk.CmdCopyBufferToImage(transfer_command_buffer, src_buffer, transfer.dst, .TRANSFER_DST_OPTIMAL, 1, &buffer_copy_region)
+		vk.CmdCopyBufferToImage(result.command_buffer, src_buffer, transfer.dst, .TRANSFER_DST_OPTIMAL, 1, &buffer_copy_region)
 
 		// Transition image to SHADER_READ_ONLY_OPTIMAL
 		texture_image_memory_barrier = vk.ImageMemoryBarrier2 {
@@ -206,206 +297,64 @@ texture_transfer_buffers_to_images :: proc
 				layerCount = transfer.image_subresource_layers.layerCount,
 			},
 		}
-		vk.CmdPipelineBarrier2(transfer_command_buffer, &texture_barrier_dependency_info)
+		vk.CmdPipelineBarrier2(result.command_buffer, &texture_barrier_dependency_info)
 	}
 
 	// Stop Recording Commands
-	vk.EndCommandBuffer(transfer_command_buffer)
+	vk.EndCommandBuffer(result.command_buffer)
 
 	// Submit Commands
+	transfer_fence_create_info := vk.FenceCreateInfo {
+		sType = .FENCE_CREATE_INFO,
+	}
+	if check_result(vk.CreateFence(device, &transfer_fence_create_info, nil, &result.fence), "Unable to create tranfer fence!", panics = false) == false {
+		vk.FreeCommandBuffers(device, transfer_command_pool, 1, &result.command_buffer)
+		return {}, false
+	}
+
 	transfer_submit_info := vk.SubmitInfo {
 		sType = .SUBMIT_INFO,
 		commandBufferCount = 1,
-		pCommandBuffers = &transfer_command_buffer,
+		pCommandBuffers = &result.command_buffer,
 	}
-	vk.QueueSubmit(transfer_queue, 1, &transfer_submit_info, transfer_fence)
-
-	check_result(vk.WaitForFences(device, 1, &transfer_fence, true, max(u64)), "Unable to wait for transfer fence!")
-	// Cleanup
-	vk.DestroyFence(device, transfer_fence, nil)\
-	vk.FreeCommandBuffers(device, transfer_command_pool, 1, &transfer_command_buffer)
-	for member in buffer_free_list {
-		vk.DestroyBuffer(device, member.buffer, nil) // buffer should never be zero, no need to check
-		vk.FreeMemory(device, member.memory, nil) // memory should never be zero, no need to check
-	}
-	delete(buffer_free_list)
-}
-
-/*
-	 This is a very generic, general-use procedure for creating a grayscale/colored (+alpha) image.
-	 If you have more specific needs, you will need to call something else or do it manually.
-*/
-texture_create_from_buffer :: proc
-(
-	device: vk.Device,
-	transfer_command_pool: vk.CommandPool,
-	transfer_queue: vk.Queue,
-	physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties,
-	buffer: []byte,
-	channels: Texture_Channels,
-	#any_int width: u32, #any_int height := u32(1), #any_int depth := u32(1),
-	#any_int array_layers := u32(1), #any_int mip_levels := u32(1),
-	usage: vk.ImageUsageFlags = {}
-) -> (Texture, bool) #optional_ok
-{
-	assert(device != nil)
-	assert(transfer_command_pool != 0)
-	assert(transfer_queue != nil)
-	assert(channels != .Invalid)
-	assert(width > 0)
-	assert(height > 0)
-	assert(depth > 0)
-	assert(array_layers > 0)
-	assert(!(depth > 1 && array_layers > 1))
-	assert(mip_levels > 0)
-
-	texture := Texture {
-		width = width,
-		height = height,
-		depth = depth,
-		mip_levels = mip_levels,
-		array_layers = array_layers,
-		channels = channels,
-	}
-
-	image_type: vk.ImageType = .D1
-	switch {
-	case height > 1 && depth > 1: image_type = .D3
-	case height > 1: image_type = .D2
-	}
-
-	// TODO: Check for format availability
-	// TODO: If format unavailable, pad appropriately
-	format: vk.Format = ---
-	switch channels {
-	case .R: format = .R8_UNORM
-	case .RG: format = .R8G8_UNORM
-	case .RGB: format = .R8G8B8_UNORM
-	case .RGBA: format = .R8G8B8A8_UNORM
-	case .Invalid: fallthrough
-	case:
-		log.fatal("Invalid format [" + #procedure + "]")
-	}
-
-	usage := usage + { .TRANSFER_DST, .SAMPLED }
-
-	// Create Device-local Image
-	texture_image_create_info := vk.ImageCreateInfo {
-		sType = .IMAGE_CREATE_INFO,
-		imageType = image_type,
-		format = format,
-		extent = { width, height, depth },
-		mipLevels = mip_levels,
-		arrayLayers = array_layers,
-		samples = { ._1 },
-		tiling = .OPTIMAL,
-		usage = usage,
-		sharingMode = .EXCLUSIVE,
-		initialLayout = .UNDEFINED,
-	}
-	check_result(vk.CreateImage(device, &texture_image_create_info, nil, &texture.image), "Unable to create texture handle!")
-
-	texture_memory_requirements: vk.MemoryRequirements = ---
-	vk.GetImageMemoryRequirements(device, texture.image, &texture_memory_requirements)
-	texture_memory_type_index := get_memory_type_index(texture_memory_requirements.memoryTypeBits, { .DEVICE_LOCAL }, physical_device_memory_properties)
-	if texture_memory_type_index == max(u32) {
-		log.error("Unable to find memory type for Texture!")
+	if check_result(vk.QueueSubmit(transfer_queue, 1, &transfer_submit_info, result.fence), "Unable to submit buffer to image transfter to the queue!", panics = false) == false
+	{
+		vk.DestroyFence(device, result.fence, nil)
+		vk.FreeCommandBuffers(device, transfer_command_pool, 1, &result.command_buffer)
 		return {}, false
 	}
 
-	texture_memory_allocate_info := vk.MemoryAllocateInfo {
-		sType = .MEMORY_ALLOCATE_INFO,
-		allocationSize = texture_memory_requirements.size,
-		memoryTypeIndex = texture_memory_type_index,
-	}
-	check_result(vk.AllocateMemory(device, &texture_memory_allocate_info, nil, &texture.memory), "Unable to allocate memory for Texture!")
-
-	check_result(vk.BindImageMemory(device, texture.image, texture.memory, vk.DeviceSize(0)), "Unable to bind memory to Texture!")
-
-	view_type: vk.ImageViewType = .D1
-	switch { // No Cube default
-	case height > 1 && depth > 1: view_type = .D3
-	case height > 1 && array_layers > 1: view_type = .D2_ARRAY
-	case height > 1: view_type = .D2
-	case array_layers > 1: view_type = .D1_ARRAY
-	}
-
-	texture_image_view_create_info := vk.ImageViewCreateInfo {
-		sType = .IMAGE_VIEW_CREATE_INFO,
-		image = texture.image,
-		viewType = view_type,
-		format = format,
-		components = { .IDENTITY, .IDENTITY, .IDENTITY, .IDENTITY },
-		subresourceRange = {
-			aspectMask = { .COLOR },
-			baseMipLevel = 0,
-			levelCount = mip_levels,
-			baseArrayLayer = 0,
-			layerCount = array_layers,
-		},
-	}
-	check_result(vk.CreateImageView(device, &texture_image_view_create_info, nil, &texture.view), "Unable to create default image view for Texture!")
-
-	// TODO: Handle mip levels and array layers!
-	texture_transfers := []Texture_Transfer_Info {
-		{
-			src = buffer,
-			dst = texture.image,
-			width = texture.width,
-			height = texture.height,
-			depth = texture.depth,
-			image_subresource_layers = {
-				aspectMask = { .COLOR },
-				mipLevel = 0,
-				baseArrayLayer = 0,
-				layerCount = 1,
-			}
-		},
-	}
-	texture_transfer_buffers_to_images(device, transfer_command_pool, transfer_queue, physical_device_memory_properties, texture_transfers)
-
-	return texture, true
+	result.free_list = buffer_free_list
+	return result, true
 }
 
-/*
-	 This is a very generic, general-use procedure for creating a grayscale/colored (+alpha) image.
-	 If you have more specific needs, you will need to call something else or do it manually.
-*/
-texture_create_from_file :: proc
+texture_wait_for_transfer :: proc
 (
 	device: vk.Device,
-	transfer_command_pool: vk.CommandPool,
-	transfer_queue: vk.Queue,
-	physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties,
-	file_path: string,
-	usage: vk.ImageUsageFlags = {}
-) -> (Texture, bool) #optional_ok
+	transfer_result: Texture_Buffer_Transfer_Result,
+	destroy_result := true,
+) -> (
+	ok: bool,
+)
 {
-	assert(device != nil)
-	assert(transfer_command_pool != 0)
-	assert(transfer_queue != nil)
-	assert(file_path != "")
-
-	// TODO: Write my own /* add x thing if needed */ stuff
-	image_data, image_load_error := image.load_from_file(file_path, { .alpha_add_if_missing })
-	if image_load_error != nil {
-		log.errorf("Failed to load texture \"%s\": %v", image_load_error)
-		return {}, false
+	transfer_result := transfer_result
+	check_result(vk.WaitForFences(device, 1, &transfer_result.fence, true, max(u64)), "Failed to wait on texture buffer tranfer fence!", panics = false) or_return
+	if destroy_result {
+		texture_buffer_transfer_result_destroy(device, transfer_result)
 	}
-	defer image.destroy(image_data)
-	return texture_create_from_buffer(device, transfer_command_pool, transfer_queue, physical_device_memory_properties, image_data.pixels.buf[:], cast(Texture_Channels)image_data.channels, image_data.width, image_data.height, usage=usage)
+	return true
 }
 
-texture_destroy :: proc(device: vk.Device, texture: Texture) {
-	if texture.view != 0 {
-		vk.DestroyImageView(device, texture.view, nil)
+texture_buffer_transfer_result_destroy :: proc(device: vk.Device, transfer_result: Texture_Buffer_Transfer_Result) {
+	vk.DeviceWaitIdle(device)
+	transfer_result := transfer_result
+	vk.DestroyFence(device, transfer_result.fence, nil)
+	vk.FreeCommandBuffers(device, transfer_result.command_pool, 1, &transfer_result.command_buffer)
+	for member in transfer_result.free_list {
+		vk.DestroyBuffer(device, member.buffer, nil)
+		vk.FreeMemory(device, member.memory, nil)
 	}
-	if texture.image != 0 {
-		vk.DestroyImage(device, texture.image, nil)
-	}
-	if texture.memory != 0 {
-		vk.FreeMemory(device, texture.memory, nil)
-	}
+	delete(transfer_result.free_list)
 }
 
 // For bindless textures
@@ -494,7 +443,7 @@ texture_allocate_descriptor_set :: proc
 	device: vk.Device,
 	texture_descriptor_pool: Texture_Descriptor_Pool,
 	#any_int descriptor_alloc_count: u32,
-	descriptor_set_init_textures: []Texture = {}
+	descriptor_set_init_views: []vk.ImageView = {}
 ) -> (
 	descriptor_set: vk.DescriptorSet,
 	ok: bool
@@ -503,7 +452,7 @@ texture_allocate_descriptor_set :: proc
 	texture_descriptor_pool := texture_descriptor_pool // For taking address of
 
 	descriptor_alloc_count := descriptor_alloc_count
-	descriptor_alloc_count = max(descriptor_alloc_count, cast(u32)len(descriptor_set_init_textures))
+	descriptor_alloc_count = max(descriptor_alloc_count, cast(u32)len(descriptor_set_init_views))
 
 	descriptor_set_variable_descriptor_count_allocate_info := vk.DescriptorSetVariableDescriptorCountAllocateInfo {
 		sType = .DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
@@ -519,8 +468,8 @@ texture_allocate_descriptor_set :: proc
 	}
 	check_result(vk.AllocateDescriptorSets(device, &descriptor_set_allocate_info, &descriptor_set), "Unable to allocate Texture Descriptor Set!")
 
-	if len(descriptor_set_init_textures) > 0 {
-		texture_update_descriptor_set(device, descriptor_set, descriptor_set_init_textures)
+	if len(descriptor_set_init_views) > 0 {
+		texture_update_descriptor_set(device, descriptor_set, descriptor_set_init_views)
 	}
 
 	return descriptor_set, true
@@ -530,16 +479,16 @@ texture_update_descriptor_set :: proc
 (
 	device: vk.Device,
 	descriptor_set: vk.DescriptorSet,
-	textures: []Texture,
-	#any_int texture_array_offset := u32(0)
+	views: []vk.ImageView,
+	#any_int array_offset := u32(0)
 )
 {
-	texture_infos := make([]vk.DescriptorImageInfo, len(textures))
+	texture_infos := make([]vk.DescriptorImageInfo, len(views))
 	defer delete(texture_infos)
 
-	for i in 0..<len(textures) {
+	for i in 0..<len(views) {
 		texture_infos[i] = vk.DescriptorImageInfo {
-			imageView = textures[i].view,
+			imageView = views[i],
 			imageLayout = .SHADER_READ_ONLY_OPTIMAL,
 		}
 	}
@@ -549,7 +498,7 @@ texture_update_descriptor_set :: proc
 			sType = .WRITE_DESCRIPTOR_SET,
 			dstSet = descriptor_set,
 			dstBinding = 0,
-			dstArrayElement = texture_array_offset,
+			dstArrayElement = array_offset,
 			descriptorType = .SAMPLED_IMAGE,
 			descriptorCount = cast(u32)len(texture_infos),
 			pImageInfo = raw_data(texture_infos),
