@@ -93,7 +93,7 @@ texture_load_from_file :: proc
 		vk.DestroyImageView(gfx.device, view, nil)
 		return {}, 0, false
 	}
-	vkjs.texture_wait_for_transfer(gfx.device, transfer_result)
+	vkjs.texture_wait_for_buffer_transfer(gfx.device, transfer_result)
 
 	return texture, view, true
 }

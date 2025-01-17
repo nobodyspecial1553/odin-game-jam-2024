@@ -121,17 +121,16 @@ Texture_Buffer_Transfer_Info :: struct {
 
 /*
 	 It is incumbent on the receiver of this struct to wait and free/destroy themselves
-	 You may use the procedure `texture_wait_for_transfer` to handle this for you
+	 You may use the procedure `texture_wait_for_buffer_transfer` or `texture_buffer_transfer_fence_destroy` to handle this for you
 */
-
-Texture_Buffer_Transfer_Result :: struct {
+Texture_Buffer_Transfer_Fence :: struct {
 	fence: vk.Fence,
 	command_buffer: vk.CommandBuffer,
 	command_pool: vk.CommandPool,
-	free_list: [dynamic]Texture_Buffer_Transfer_Buffer_Free_Member,
+	free_list: [dynamic]Texture_Buffer_Transfer_Fence_Buffer_Free_Member,
 }
 
-Texture_Buffer_Transfer_Buffer_Free_Member :: struct {
+Texture_Buffer_Transfer_Fence_Buffer_Free_Member :: struct {
 	buffer: vk.Buffer,
 	memory: vk.DeviceMemory,
 }
@@ -145,7 +144,7 @@ texture_transfer_buffers_to_images :: proc
 	physical_device_memory_properties: vk.PhysicalDeviceMemoryProperties,
 	transfers: []Texture_Buffer_Transfer_Info,
 ) -> (
-	result: Texture_Buffer_Transfer_Result,
+	result: Texture_Buffer_Transfer_Fence,
 	ok: bool,
 ) #optional_ok
 {
@@ -153,7 +152,7 @@ texture_transfer_buffers_to_images :: proc
 	assert(transfer_command_pool != 0)
 	assert(transfer_queue != nil)
 
-	buffer_free_list := make([dynamic]Texture_Buffer_Transfer_Buffer_Free_Member, 0, len(transfers))
+	buffer_free_list := make([dynamic]Texture_Buffer_Transfer_Fence_Buffer_Free_Member, 0, len(transfers))
 
 	transfer_command_buffer_allocate_info := vk.CommandBufferAllocateInfo {
 		sType = .COMMAND_BUFFER_ALLOCATE_INFO,
@@ -226,7 +225,7 @@ texture_transfer_buffers_to_images :: proc
 			vk.UnmapMemory(device, buffer_memory)
 
 			// Append to free list
-			append(&buffer_free_list, Texture_Buffer_Transfer_Buffer_Free_Member { buffer, buffer_memory })
+			append(&buffer_free_list, Texture_Buffer_Transfer_Fence_Buffer_Free_Member { buffer, buffer_memory })
 
 			src_buffer = buffer
 		case vk.Buffer:
@@ -328,33 +327,33 @@ texture_transfer_buffers_to_images :: proc
 	return result, true
 }
 
-texture_wait_for_transfer :: proc
+texture_wait_for_buffer_transfer :: proc
 (
 	device: vk.Device,
-	transfer_result: Texture_Buffer_Transfer_Result,
+	transfer_fence: Texture_Buffer_Transfer_Fence,
 	destroy_result := true,
 ) -> (
 	ok: bool,
 )
 {
-	transfer_result := transfer_result
-	check_result(vk.WaitForFences(device, 1, &transfer_result.fence, true, max(u64)), "Failed to wait on texture buffer tranfer fence!", panics = false) or_return
+	transfer_fence := transfer_fence
+	check_result(vk.WaitForFences(device, 1, &transfer_fence.fence, true, max(u64)), "Failed to wait on texture buffer tranfer fence!", panics = false) or_return
 	if destroy_result {
-		texture_buffer_transfer_result_destroy(device, transfer_result)
+		texture_buffer_transfer_fence_destroy(device, transfer_fence)
 	}
 	return true
 }
 
-texture_buffer_transfer_result_destroy :: proc(device: vk.Device, transfer_result: Texture_Buffer_Transfer_Result) {
+texture_buffer_transfer_fence_destroy :: proc(device: vk.Device, transfer_fence: Texture_Buffer_Transfer_Fence) {
 	vk.DeviceWaitIdle(device)
-	transfer_result := transfer_result
-	vk.DestroyFence(device, transfer_result.fence, nil)
-	vk.FreeCommandBuffers(device, transfer_result.command_pool, 1, &transfer_result.command_buffer)
-	for member in transfer_result.free_list {
+	transfer_fence := transfer_fence
+	vk.DestroyFence(device, transfer_fence.fence, nil)
+	vk.FreeCommandBuffers(device, transfer_fence.command_pool, 1, &transfer_fence.command_buffer)
+	for member in transfer_fence.free_list {
 		vk.DestroyBuffer(device, member.buffer, nil)
 		vk.FreeMemory(device, member.memory, nil)
 	}
-	delete(transfer_result.free_list)
+	delete(transfer_fence.free_list)
 }
 
 // For bindless textures
