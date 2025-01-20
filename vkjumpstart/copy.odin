@@ -78,7 +78,7 @@ copy :: proc
 		dstStageMask = { .TRANSFER },
 		dstAccessMask = { .TRANSFER_WRITE },
 		oldLayout = .UNDEFINED, // Replace with initial layout
-		newLayout = .TRANSFER_DST_OPTIMAL,
+		newLayout = .UNDEFINED, // Replace with TRANSFER_(SRC/DST)_OPTIMAL
 		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		image = 0, // Replace with image
@@ -96,7 +96,7 @@ copy :: proc
 		srcAccessMask = { .TRANSFER_WRITE },
 		dstStageMask = { .ALL_TRANSFER },
 		dstAccessMask = {},
-		oldLayout = .TRANSFER_DST_OPTIMAL,
+		oldLayout = .UNDEFINED, // Replace with TRANSFER_(SRC/DST)_OPTIMAL
 		newLayout = .UNDEFINED, // Replace with final layout
 		srcQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
 		dstQueueFamilyIndex = vk.QUEUE_FAMILY_IGNORED,
@@ -145,6 +145,7 @@ copy :: proc
 		texture_image_memory_barrier := INITIAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
 		texture_image_memory_barrier.image = copy_info.dst.image
 		texture_image_memory_barrier.oldLayout = copy_info.dst.initial_layout
+		texture_image_memory_barrier.newLayout = .TRANSFER_DST_OPTIMAL
 		texture_image_memory_barrier.subresourceRange = {
 			aspectMask = aspect_mask,
 			baseMipLevel = min_mip_level,
@@ -154,7 +155,84 @@ copy :: proc
 		}
 		append(&image_transitions, texture_image_memory_barrier)
 	case Copy_Info_Image_To_Buffer:
+		aspect_mask: vk.ImageAspectFlags
+		min_mip_level := max(u32)
+		max_mip_level := u32(0)
+		min_array_layer := max(u32)
+		max_array_layer := u32(0)
+		for copy_region in copy_info.copy_regions {
+			aspect_mask |= copy_region.imageSubresource.aspectMask
+			min_mip_level = min(min_mip_level, copy_region.imageSubresource.mipLevel)
+			max_mip_level = max(max_mip_level, copy_region.imageSubresource.mipLevel)
+			min_array_layer = min(min_array_layer, copy_region.imageSubresource.baseArrayLayer)
+			max_array_layer = max(max_array_layer, copy_region.imageSubresource.baseArrayLayer + copy_region.imageSubresource.layerCount - 1)
+		}
+		texture_image_memory_barrier := INITIAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+		texture_image_memory_barrier.image = copy_info.src.image
+		texture_image_memory_barrier.oldLayout = copy_info.src.initial_layout
+		texture_image_memory_barrier.newLayout = .TRANSFER_SRC_OPTIMAL
+		texture_image_memory_barrier.subresourceRange = {
+			aspectMask = aspect_mask,
+			baseMipLevel = min_mip_level,
+			levelCount = max_mip_level - min_mip_level + 1,
+			baseArrayLayer = min_array_layer,
+			layerCount = max_array_layer - min_array_layer + 1,
+		}
+		append(&image_transitions, texture_image_memory_barrier)
 	case Copy_Info_Image_To_Image:
+		// Src
+		src_texture_image_memory_barrier := INITIAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+		src_texture_image_memory_barrier.image = copy_info.src.image
+		src_texture_image_memory_barrier.oldLayout = copy_info.src.initial_layout
+		src_texture_image_memory_barrier.newLayout = .TRANSFER_SRC_OPTIMAL
+		{
+			aspect_mask: vk.ImageAspectFlags
+			min_mip_level := max(u32)
+			max_mip_level := u32(0)
+			min_array_layer := max(u32)
+			max_array_layer := u32(0)
+			for copy_region in copy_info.copy_regions {
+				aspect_mask |= copy_region.srcSubresource.aspectMask
+				min_mip_level = min(min_mip_level, copy_region.srcSubresource.mipLevel)
+				max_mip_level = max(max_mip_level, copy_region.srcSubresource.mipLevel)
+				min_array_layer = min(min_array_layer, copy_region.srcSubresource.baseArrayLayer)
+				max_array_layer = max(max_array_layer, copy_region.srcSubresource.baseArrayLayer + copy_region.srcSubresource.layerCount - 1)
+			}
+			src_texture_image_memory_barrier.subresourceRange = {
+				aspectMask = aspect_mask,
+				baseMipLevel = min_mip_level,
+				levelCount = max_mip_level - min_mip_level + 1,
+				baseArrayLayer = min_array_layer,
+				layerCount = max_array_layer - min_array_layer + 1,
+			}
+		}
+		// Dst
+		dst_texture_image_memory_barrier := INITIAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+		dst_texture_image_memory_barrier.image = copy_info.dst.image
+		dst_texture_image_memory_barrier.oldLayout = copy_info.dst.initial_layout
+		dst_texture_image_memory_barrier.newLayout = .TRANSFER_DST_OPTIMAL
+		{
+			aspect_mask: vk.ImageAspectFlags
+			min_mip_level := max(u32)
+			max_mip_level := u32(0)
+			min_array_layer := max(u32)
+			max_array_layer := u32(0)
+			for copy_region in copy_info.copy_regions {
+				aspect_mask |= copy_region.dstSubresource.aspectMask
+				min_mip_level = min(min_mip_level, copy_region.dstSubresource.mipLevel)
+				max_mip_level = max(max_mip_level, copy_region.dstSubresource.mipLevel)
+				min_array_layer = min(min_array_layer, copy_region.dstSubresource.baseArrayLayer)
+				max_array_layer = max(max_array_layer, copy_region.dstSubresource.baseArrayLayer + copy_region.dstSubresource.layerCount - 1)
+			}
+			dst_texture_image_memory_barrier.subresourceRange = {
+				aspectMask = aspect_mask,
+				baseMipLevel = min_mip_level,
+				levelCount = max_mip_level - min_mip_level + 1,
+				baseArrayLayer = min_array_layer,
+				layerCount = max_array_layer - min_array_layer + 1,
+			}
+		}
+		append(&image_transitions, src_texture_image_memory_barrier, dst_texture_image_memory_barrier)
 	}
 	texture_barrier_dependency_info := vk.DependencyInfo {
 		sType = .DEPENDENCY_INFO,
@@ -170,7 +248,9 @@ copy :: proc
 	case Copy_Info_Buffer_To_Image:
 		vk.CmdCopyBufferToImage(copy_fence.command_buffer, copy_info.src.buffer, copy_info.dst.image, .TRANSFER_DST_OPTIMAL, cast(u32)len(copy_info.copy_regions), raw_data(copy_info.copy_regions))
 	case Copy_Info_Image_To_Buffer:
+		vk.CmdCopyImageToBuffer(copy_fence.command_buffer, copy_info.src.image, .TRANSFER_DST_OPTIMAL, copy_info.dst.buffer, cast(u32)len(copy_info.copy_regions), raw_data(copy_info.copy_regions))
 	case Copy_Info_Image_To_Image:
+		vk.CmdCopyImage(copy_fence.command_buffer, copy_info.src.image, .TRANSFER_SRC_OPTIMAL, copy_info.dst.image, .TRANSFER_DST_OPTIMAL, cast(u32)len(copy_info.copy_regions), raw_data(copy_info.copy_regions))
 	}
 
 	// Transition all images into .final_layout
@@ -184,13 +264,38 @@ copy :: proc
 			subresource_range := texture_image_memory_barrier.subresourceRange
 			texture_image_memory_barrier^ = FINAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
 			texture_image_memory_barrier.image = copy_info.dst.image
+			texture_image_memory_barrier.oldLayout = .TRANSFER_DST_OPTIMAL
 			texture_image_memory_barrier.newLayout = copy_info.dst.final_layout
 			texture_image_memory_barrier.subresourceRange = subresource_range
 
 			image_transitions_index += 1
 		case Copy_Info_Image_To_Buffer:
+			texture_image_memory_barrier := &image_transitions[image_transitions_index]
+			subresource_range := texture_image_memory_barrier.subresourceRange
+			texture_image_memory_barrier^ = FINAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+			texture_image_memory_barrier.image = copy_info.src.image
+			texture_image_memory_barrier.oldLayout = .TRANSFER_SRC_OPTIMAL
+			texture_image_memory_barrier.newLayout = copy_info.src.final_layout
+			texture_image_memory_barrier.subresourceRange = subresource_range
+
 			image_transitions_index += 1
 		case Copy_Info_Image_To_Image:
+			src_texture_image_memory_barrier := &image_transitions[image_transitions_index]
+			src_subresource_range := src_texture_image_memory_barrier.subresourceRange
+			src_texture_image_memory_barrier^ = FINAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+			src_texture_image_memory_barrier.image = copy_info.src.image
+			src_texture_image_memory_barrier.oldLayout = .TRANSFER_SRC_OPTIMAL
+			src_texture_image_memory_barrier.newLayout = copy_info.src.final_layout
+			src_texture_image_memory_barrier.subresourceRange = src_subresource_range
+
+			dst_texture_image_memory_barrier := &image_transitions[image_transitions_index + 1]
+			dst_subresource_range := dst_texture_image_memory_barrier.subresourceRange
+			dst_texture_image_memory_barrier^ = FINAL_TEXTURE_MEMORY_BARRIER_TEMPLATE
+			dst_texture_image_memory_barrier.image = copy_info.dst.image
+			dst_texture_image_memory_barrier.oldLayout = .TRANSFER_DST_OPTIMAL
+			dst_texture_image_memory_barrier.newLayout = copy_info.dst.final_layout
+			dst_texture_image_memory_barrier.subresourceRange = dst_subresource_range
+
 			image_transitions_index += 2
 		}
 	}

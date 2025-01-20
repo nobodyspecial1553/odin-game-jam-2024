@@ -116,6 +116,9 @@ texture_load_from_file :: proc
 		},
 	}
 	copy_fence, copy_success := vkjs.copy(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, slice.from_ptr(&copy_info, 1))
+	if !copy_success {
+		vkjs.texture_destroy(gfx.device, texture)
+	}
 	vkjs.copy_fence_wait(gfx.device, copy_fence)
 
 	return texture, view, true
