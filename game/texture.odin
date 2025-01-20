@@ -38,6 +38,24 @@ texture_load_from_file :: proc
 	}
 	defer image.destroy(image_data)
 
+	// Create buffer to hold pixel data
+	buffer_create_info := vk.BufferCreateInfo {
+		size = cast(vk.DeviceSize)len(image_data.pixels.buf),
+		usage = { .TRANSFER_SRC },
+		sharingMode = .EXCLUSIVE,
+	}
+	buffer: vk.Buffer
+	buffer_memory := vkjs.buffer_create(gfx.device, gfx.physical_device_memory_properties, slice.from_ptr(&buffer_create_info, 1), { .HOST_VISIBLE, .HOST_COHERENT }, slice.from_ptr(&buffer, 1)) or_return
+	defer {
+		vk.DestroyBuffer(gfx.device, buffer, nil)
+		vk.FreeMemory(gfx.device, buffer_memory, nil)
+	}
+	
+	buffer_ptr: rawptr = ---
+	vkjs.check_result(vk.MapMemory(gfx.device, buffer_memory, 0, cast(vk.DeviceSize)vk.WHOLE_SIZE, {}, &buffer_ptr), panics = false) or_return
+	copy(slice.bytes_from_ptr(buffer_ptr, len(image_data.pixels.buf)), image_data.pixels.buf[:])
+	vk.UnmapMemory(gfx.device, buffer_memory)
+
 	// Create Texture
 	image_views := slice.from_ptr(&view, 1)
 	image_view_create_infos := []vk.ImageViewCreateInfo {
@@ -75,25 +93,30 @@ texture_load_from_file :: proc
 		return {}, 0, false
 	}
 
-	// Transfer from RAM to VRAM
-	texture_buffer_transfer_info := vkjs.Texture_Buffer_Transfer_Info {
-		src = image_data.pixels.buf[:],
-		dst = texture.image,
-		extent = texture.extent,
-		image_subresource_layers = {
-			aspectMask = { .COLOR },
-			mipLevel = 0,
-			baseArrayLayer = 0,
-			layerCount = 1,
+	// Copy Buffer to Image
+	copy_info: vkjs.Copy_Info = vkjs.Copy_Info_Buffer_To_Image {
+		src = {
+			buffer = buffer,
+		},
+		dst = {
+			image = texture.image,
+			initial_layout = .UNDEFINED,
+			final_layout = .SHADER_READ_ONLY_OPTIMAL,
+		},
+		copy_regions = []vk.BufferImageCopy {
+			{
+				imageSubresource = {
+					aspectMask = { .COLOR },
+					mipLevel = 0,
+					baseArrayLayer = 0,
+					layerCount = 1,
+				},
+				imageExtent = texture.extent,
+			},
 		},
 	}
-	transfer_result, transfer_success := vkjs.texture_transfer_buffers_to_images(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, slice.from_ptr(&texture_buffer_transfer_info, 1))
-	if !transfer_success {
-		vkjs.texture_destroy(gfx.device, texture)
-		vk.DestroyImageView(gfx.device, view, nil)
-		return {}, 0, false
-	}
-	vkjs.texture_wait_for_buffer_transfer(gfx.device, transfer_result)
+	copy_fence, copy_success := vkjs.copy(gfx.device, gfx.command_pools[.Transfer], gfx.queues[.Transfer].handle, gfx.physical_device_memory_properties, slice.from_ptr(&copy_info, 1))
+	vkjs.copy_fence_wait(gfx.device, copy_fence)
 
 	return texture, view, true
 }
